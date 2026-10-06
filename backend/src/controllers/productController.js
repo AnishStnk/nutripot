@@ -133,57 +133,237 @@ exports.createProduct = async (req, res) => {
     console.log('Creating product with data:', req.body);
     console.log('Uploaded files:', req.files);
 
-    // Parse FormData fields
+    // --------------------------------------------------
+    // PARSE BASIC FIELDS
+    // --------------------------------------------------
+
+    const price = parseFloat(req.body.price);
+
+    if (isNaN(price)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid product price is required'
+      });
+    }
+
+    const stock = req.body.stock
+      ? parseInt(req.body.stock, 10)
+      : 0;
+
+    if (isNaN(stock) || stock < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid stock quantity is required'
+      });
+    }
+
+    // --------------------------------------------------
+    // PARSE TAGS
+    // --------------------------------------------------
+
+    let tags = [];
+
+    if (req.body.tags) {
+      try {
+        tags =
+          typeof req.body.tags === 'string'
+            ? JSON.parse(req.body.tags)
+            : req.body.tags;
+
+        if (!Array.isArray(tags)) {
+          tags = [];
+        }
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid tags format'
+        });
+      }
+    }
+
+    // --------------------------------------------------
+    // PARSE SPECIFICATIONS
+    // --------------------------------------------------
+
+    let specifications = {};
+
+    if (req.body.specifications) {
+      try {
+        specifications =
+          typeof req.body.specifications === 'string'
+            ? JSON.parse(req.body.specifications)
+            : req.body.specifications;
+      } catch (error) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid specifications format'
+        });
+      }
+    }
+
+    // --------------------------------------------------
+    // HANDLE DIRECT SPECIFICATION FIELDS
+    // Useful if frontend sends them individually
+    // --------------------------------------------------
+
+    const specificationFields = [
+      'material',
+      'weight',
+      'dimensions',
+      'color',
+      'countryOfOrigin',
+      'ingredients',
+      'benefits',
+      'usage',
+      'expiryDate',
+      'manufacturingDate',
+      'nutritionalInfo',
+      'storageInstructions',
+      'vegNonVeg',
+      'dosage',
+      'precautions',
+      'warranty'
+    ];
+
+    specificationFields.forEach((field) => {
+      if (
+        req.body[field] !== undefined &&
+        req.body[field] !== ''
+      ) {
+        specifications[field] = req.body[field];
+      }
+    });
+
+    // --------------------------------------------------
+    // BUILD PRODUCT DATA
+    // --------------------------------------------------
+
     const productData = {
-      name: req.body.name,
-      description: req.body.description,
-      price: parseFloat(req.body.price),
-      discountPrice: req.body.discountPrice ? parseFloat(req.body.discountPrice) : undefined,
+      name: req.body.name?.trim(),
+      description: req.body.description?.trim(),
+
+      price,
+
+      discountPrice:
+        req.body.discountPrice !== undefined &&
+        req.body.discountPrice !== ''
+          ? parseFloat(req.body.discountPrice)
+          : undefined,
+
       category: req.body.category,
-      stock: parseInt(req.body.stock) || 0,
-      fabric: req.body.fabric,
-      isFeatured: req.body.isFeatured === 'true',
-      colors: req.body.colors ? JSON.parse(req.body.colors) : [],
-      sizes: req.body.sizes ? JSON.parse(req.body.sizes) : [],
-      mainImageIndex: parseInt(req.body.mainImageIndex) || 0
+
+      brand: req.body.brand?.trim(),
+
+      sku: req.body.sku?.trim(),
+
+      stock,
+
+      unit: req.body.unit?.trim(),
+
+      tags,
+
+      specifications,
+
+      isFeatured:
+        req.body.isFeatured === true ||
+        req.body.isFeatured === 'true',
+
+      isActive:
+        req.body.isActive === undefined
+          ? true
+          : req.body.isActive === true ||
+            req.body.isActive === 'true',
+
+      mainImageIndex:
+        req.body.mainImageIndex !== undefined
+          ? parseInt(req.body.mainImageIndex, 10)
+          : 0
     };
 
-    // Add specifications if provided
-    if (req.body.length || req.body.width || req.body.weight) {
-      productData.specifications = {
-        length: req.body.length || '',
-        width: req.body.width || '',
-        weight: req.body.weight || ''
-      };
+    // --------------------------------------------------
+    // VALIDATE DISCOUNT PRICE
+    // --------------------------------------------------
+
+    if (
+      productData.discountPrice !== undefined &&
+      (
+        isNaN(productData.discountPrice) ||
+        productData.discountPrice < 0
+      )
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid discount price'
+      });
     }
 
-    // Handle uploaded images - Upload to S3
-    if (req.files && req.files.length > 0) {
-      const uploadPromises = req.files.map(async (file, index) => {
-        const uploadResult = await uploadToS3(file);
-        return {
-          url: uploadResult.url,
-          key: uploadResult.key,
-          alt: `${req.body.name} - Image ${index + 1}`
-        };
+    if (
+      productData.discountPrice !== undefined &&
+      productData.discountPrice > productData.price
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'Discount price cannot be greater than product price'
       });
+    }
+
+    // --------------------------------------------------
+    // UPLOAD IMAGES TO S3
+    // --------------------------------------------------
+
+    if (req.files && req.files.length > 0) {
+      const uploadPromises = req.files.map(
+        async (file, index) => {
+          const uploadResult = await uploadToS3(file);
+
+          return {
+            url: uploadResult.url,
+            key: uploadResult.key,
+            alt: `${productData.name} - Image ${index + 1}`
+          };
+        }
+      );
 
       productData.images = await Promise.all(uploadPromises);
+    } else {
+      productData.images = [];
     }
+
+    // --------------------------------------------------
+    // VALIDATE MAIN IMAGE INDEX
+    // --------------------------------------------------
+
+    if (
+      productData.images.length > 0 &&
+      productData.mainImageIndex >= productData.images.length
+    ) {
+      productData.mainImageIndex = 0;
+    }
+
+    // --------------------------------------------------
+    // CREATE PRODUCT
+    // --------------------------------------------------
 
     const product = await Product.create(productData);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Product created successfully',
       product
     });
+
   } catch (error) {
     console.error('Error creating product:', error);
 
-    // Handle validation errors more specifically
+    // --------------------------------------------------
+    // MONGOOSE VALIDATION ERROR
+    // --------------------------------------------------
+
     if (error.name === 'ValidationError') {
-      const errors = Object.values(error.errors).map(err => err.message);
+      const errors = Object.values(error.errors).map(
+        (err) => err.message
+      );
+
       return res.status(400).json({
         success: false,
         message: 'Validation Error',
@@ -191,9 +371,23 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    // --------------------------------------------------
+    // DUPLICATE KEY ERROR
+    // --------------------------------------------------
+
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern || {})[0];
+
+      return res.status(400).json({
+        success: false,
+        message: `${field || 'Product'} already exists`
+      });
+    }
+
+    return res.status(500).json({
       success: false,
-      message: error.message
+      message: 'Error creating product',
+      error: error.message
     });
   }
 };
